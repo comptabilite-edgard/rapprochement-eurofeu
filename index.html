@@ -112,6 +112,7 @@
         🔍 Analyser la facture
       </button>
       <button class="btn btn-outline no-print" id="resetBtn" style="display:none" onclick="resetAll()">↩ Recommencer</button>
+      <button class="btn btn-outline no-print" onclick="loadDemo()" style="font-size:12px;opacity:.6" title="Charge une facture fictive avec anomalies pour tester l'email">🧪 Mode test</button>
     </div>
   </div>
   <div id="statusMsg"></div>
@@ -372,6 +373,24 @@ function renderTable(rows) {
   const es = totE > 0 ? '+' : '';
   const ec = totE > 0.01 ? 'ecart-neg' : totE < -0.01 ? 'ecart-pos' : 'ecart-zero';
   document.getElementById('totauxRow').innerHTML = '<strong>Totaux (' + filtered.length + ' ligne' + (filtered.length > 1 ? 's' : '') + ') :</strong> Montant facturé HT : <strong>' + totHT.toFixed(2) + ' €</strong> &nbsp;|&nbsp; Montant BPU HT : <strong>' + totBPU.toFixed(2) + ' €</strong> &nbsp;|&nbsp; Écart : <strong class="' + ec + '">' + es + totE.toFixed(2) + ' €</strong>';
+}
+
+function loadDemo() {
+  const demoInfo = { numero: 'TEST-2026', date: '26/06/2026', client: '99999', totalHT: 312.45, totalTTC: 374.94 };
+  const demoLignes = [
+    { code: 'A011650', designation: 'FORMULE PRO SERENITE Forfait TOUT COMPRIS', qte: 5, puHT: 23.50,  montantHT: 117.50 },
+    { code: 'A002774', designation: 'Vérification BAES',                          qte: 8, puHT: 6.90,   montantHT: 55.20  },
+    { code: 'A008175', designation: 'Vacation par établissement',                 qte: 1, puHT: 35.00,  montantHT: 35.00  },
+    { code: 'A008179', designation: 'Frais administratifs',                       qte: 1, puHT: 8.00,   montantHT: 8.00   },
+    { code: 'A002774', designation: 'Vérification BAES',                          qte: 4, puHT: 6.90,   montantHT: 27.60  },
+  ];
+  allRows = rapprocher(demoLignes);
+  renderResults(demoInfo, allRows);
+  hideMsg();
+  document.getElementById('resultSection').style.display = 'block';
+  document.getElementById('resetBtn').style.display = 'inline-flex';
+  document.getElementById('resultSection').scrollIntoView({ behavior: 'smooth' });
+  showMsg('⚠️ Mode test actif — données fictives uniquement.', 'info');
 }
 
 function sendEmailAnomalie() {
