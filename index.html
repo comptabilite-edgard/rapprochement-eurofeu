@@ -33,6 +33,7 @@
   .btn:disabled { opacity: .4; cursor: not-allowed; }
   .btn-green { background: var(--green); color: white; }
   .btn-gold { background: var(--gold); color: white; }
+  .btn-red { background: var(--red); color: white; }
   .btn-outline { background: white; color: var(--green); border: 1.5px solid var(--green); }
   .btn:not(:disabled):hover { opacity: .88; }
   #statusMsg { padding: 10px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 13px; display: none; }
@@ -123,6 +124,7 @@
       <div class="actions-bar">
         <button class="btn btn-gold no-print" onclick="window.print()">🖨️ Imprimer / PDF</button>
         <button class="btn btn-outline no-print" onclick="exportCSV()">📊 Export CSV</button>
+        <button class="btn btn-red no-print" id="btnEmail" style="display:none" onclick="sendEmailAnomalie()">✉️ Signaler les anomalies à Eurofeu</button>
         <div class="filter-btns no-print" id="filterBtns"></div>
       </div>
       <div id="tableWrapper">
@@ -305,12 +307,15 @@ function renderResults(info, rows) {
   if (nErr === 0 && nUnknown === 0) {
     vb.className = 'verdict-banner verdict-ok';
     vb.innerHTML = '✅ Facture conforme — Tous les tarifs correspondent au BPU contractuel.';
+    document.getElementById('btnEmail').style.display = 'none';
   } else if (nErr > 0) {
     vb.className = 'verdict-banner verdict-nok';
     vb.innerHTML = '⚠️ ' + nErr + ' ligne(s) en anomalie — Écart total surfacturé : <strong>+' + totEcartErr.toFixed(2) + ' € HT</strong>. À contester auprès d\'Eurofeu.';
+    document.getElementById('btnEmail').style.display = 'inline-flex';
   } else {
     vb.className = 'verdict-banner verdict-warn';
     vb.innerHTML = '⚠️ ' + nUnknown + ' ligne(s) hors BPU — Références non présentes dans la grille tarifaire. Vérification manuelle nécessaire.';
+    document.getElementById('btnEmail').style.display = 'none';
   }
 
   const fb = document.getElementById('filterBtns');
@@ -367,6 +372,51 @@ function renderTable(rows) {
   const es = totE > 0 ? '+' : '';
   const ec = totE > 0.01 ? 'ecart-neg' : totE < -0.01 ? 'ecart-pos' : 'ecart-zero';
   document.getElementById('totauxRow').innerHTML = '<strong>Totaux (' + filtered.length + ' ligne' + (filtered.length > 1 ? 's' : '') + ') :</strong> Montant facturé HT : <strong>' + totHT.toFixed(2) + ' €</strong> &nbsp;|&nbsp; Montant BPU HT : <strong>' + totBPU.toFixed(2) + ' €</strong> &nbsp;|&nbsp; Écart : <strong class="' + ec + '">' + es + totE.toFixed(2) + ' €</strong>';
+}
+
+function sendEmailAnomalie() {
+  const anomalies = allRows.filter(r => r.statut === 'err');
+  if (anomalies.length === 0) return;
+
+  // Récupérer infos facture depuis le DOM
+  const infoEl = document.getElementById('infoFacture');
+  const numM = infoEl.innerHTML.match(/N° Facture.*?<strong>(.*?)<\/strong>/);
+  const dateM = infoEl.innerHTML.match(/Date.*?<strong>(.*?)<\/strong>/);
+  const numFact = numM ? numM[1] : '(numéro non détecté)';
+  const dateFact = dateM ? dateM[1] : '';
+
+  const totEcart = anomalies.reduce((s, r) => s + (r.ecartTotal || 0), 0);
+
+  let lignesDetail = '';
+  anomalies.forEach(r => {
+    lignesDetail += '- Code ' + r.code + ' : facturé ' + r.puHT.toFixed(2) + ' € HT' +
+      ' / BPU contractuel ' + r.prixBPU.toFixed(2) + ' € HT' +
+      ' → écart unitaire +' + r.ecartUnitaire.toFixed(2) + ' €' +
+      ' × ' + r.qte + ' = +' + r.ecartTotal.toFixed(2) + ' € HT\n';
+  });
+
+  const sujet = 'Anomalie tarifaire — Facture N° ' + numFact + (dateFact ? ' du ' + dateFact : '');
+
+  const corps =
+'Madame, Monsieur,\n\n' +
+'Suite au contrôle de votre facture N° ' + numFact + (dateFact ? ' du ' + dateFact : '') + ', ' +
+'nous avons constaté ' + anomalies.length + ' écart' + (anomalies.length > 1 ? 's' : '') + ' entre les tarifs facturés et notre grille tarifaire contractuelle (BPU en vigueur).\n\n' +
+'Détail des anomalies :\n\n' +
+lignesDetail + '\n' +
+'Écart total de surfacturation : +' + totEcart.toFixed(2) + ' € HT\n\n' +
+'Nous vous remercions de bien vouloir émettre un avoir correctif pour un montant de ' + totEcart.toFixed(2) + ' € HT, ' +
+'ou de nous adresser une facture rectificative dans les meilleurs délais.\n\n' +
+'Restant à votre disposition pour tout renseignement complémentaire,\n\n' +
+'Cordialement,\n' +
+'Groupe Edgard\n' +
+'Comptabilité — SAS Edgard Développement\n' +
+'19 rue Edward Vaillant, 37000 Tours';
+
+  const mailto = 'mailto:adv@eurofeu.fr' +
+    '?subject=' + encodeURIComponent(sujet) +
+    '&body=' + encodeURIComponent(corps);
+
+  window.location.href = mailto;
 }
 
 function exportCSV() {
