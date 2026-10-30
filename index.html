@@ -63,6 +63,8 @@
   .pill-err { background: var(--red-light); color: var(--red); }
   .pill-warn { background: var(--orange-light); color: var(--orange); }
   .pill-unknown { background: #f0f0f0; color: #555; }
+  .pill-libelle { background: #ede9fe; color: #6d28d9; }
+  .code-mismatch { font-size: 11px; color: #6d28d9; display: block; margin-top: 2px; }
   .ecart-neg { color: var(--red); font-weight: bold; }
   .ecart-pos { color: var(--green); font-weight: bold; }
   .ecart-zero { color: var(--gray); }
@@ -242,17 +244,57 @@ function parseInvoice(text) {
   return { info, lignes };
 }
 
+function normalizeLabel(str) {
+  if (!str) return '';
+  return str.toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')  // suppr accents
+    .replace(/[^a-z0-9]/g, ' ')                         // tout sauf alphanum → espace
+    .replace(/\s+/g, ' ').trim();
+}
+
+// Recherche d'un code BPU dont le libellé correspond (inclusion partielle, min 15 chars)
+function findBPUByLabel(designation) {
+  const nf = normalizeLabel(designation);
+  if (nf.length < 15) return null;
+  for (const [code, entry] of Object.entries(BPU)) {
+    const nb = normalizeLabel(entry.designation);
+    if (nb.includes(nf) || nf.includes(nb)) return code;
+  }
+  return null;
+}
+
 function rapprocher(lignes) {
   return lignes.map(l => {
-    const bpu = BPU[l.code];
+    let bpu = BPU[l.code];
+    let codeMatch = l.code;      // code qui a produit la correspondance BPU
+    let statut = 'unknown';
+    let byLabel = false;
+
+    if (!bpu) {
+      // Fallback : recherche par libellé (correspondance partielle)
+      const found = findBPUByLabel(l.designation);
+      if (found) { bpu = BPU[found]; codeMatch = found; byLabel = true; }
+    }
+
     const prixBPU = bpu ? bpu.prix_bpu : null;
-    let ecartUnitaire = null, ecartTotal = null, statut = 'unknown';
+    let ecartUnitaire = null, ecartTotal = null;
+
     if (prixBPU !== null) {
       ecartUnitaire = Math.round((l.puHT - prixBPU) * 100) / 100;
-      ecartTotal = Math.round(ecartUnitaire * l.qte * 100) / 100;
-      statut = Math.abs(ecartUnitaire) < 0.01 ? 'ok' : ecartUnitaire > 0 ? 'err' : 'warn';
+      ecartTotal    = Math.round(ecartUnitaire * l.qte * 100) / 100;
+      if (byLabel) {
+        statut = 'libelle';  // correspondance par libellé — code différent
+      } else {
+        statut = Math.abs(ecartUnitaire) < 0.01 ? 'ok' : ecartUnitaire > 0 ? 'err' : 'warn';
+      }
     }
-    return { ...l, prixBPU, ecartUnitaire, ecartTotal, statut, designBPU: bpu ? bpu.designation : null };
+
+    return {
+      ...l,
+      prixBPU, ecartUnitaire, ecartTotal, statut,
+      designBPU: bpu ? bpu.designation : null,
+      codeMatch: byLabel ? codeMatch : null  // code BPU différent si match par libellé
+    };
   });
 }
 
@@ -290,10 +332,11 @@ function renderResults(info, rows) {
     (info.totalHT !== undefined ? '<span>Total HT facturé : <strong>' + info.totalHT.toFixed(2) + ' €</strong></span>' : '') +
     (info.totalTTC !== undefined ? '<span>Total TTC : <strong>' + info.totalTTC.toFixed(2) + ' €</strong></span>' : '');
 
-  const nOk = rows.filter(r => r.statut === 'ok').length;
-  const nErr = rows.filter(r => r.statut === 'err').length;
-  const nWarn = rows.filter(r => r.statut === 'warn').length;
+  const nOk      = rows.filter(r => r.statut === 'ok').length;
+  const nErr     = rows.filter(r => r.statut === 'err').length;
+  const nWarn    = rows.filter(r => r.statut === 'warn').length;
   const nUnknown = rows.filter(r => r.statut === 'unknown').length;
+  const nLibelle = rows.filter(r => r.statut === 'libelle').length;
   const totEcartErr = rows.filter(r => r.statut === 'err').reduce((s, r) => s + (r.ecartTotal || 0), 0);
 
   document.getElementById('summaryGrid').innerHTML =
@@ -301,17 +344,24 @@ function renderResults(info, rows) {
     '<div class="summary-box box-ok"><div class="val">' + nOk + '</div><div class="lbl">Conformes</div></div>' +
     '<div class="summary-box box-err"><div class="val">' + nErr + '</div><div class="lbl">Anomalies (surfacturation)</div></div>' +
     '<div class="summary-box box-warn"><div class="val">' + nWarn + '</div><div class="lbl">À vérifier</div></div>' +
+    (nLibelle > 0 ? '<div class="summary-box" style="background:#ede9fe;color:#6d28d9"><div class="val">' + nLibelle + '</div><div class="lbl">Code différent / libellé</div></div>' : '') +
     '<div class="summary-box box-unknown"><div class="val">' + nUnknown + '</div><div class="lbl">Hors BPU</div></div>' +
     '<div class="summary-box ' + (totEcartErr > 0 ? 'box-err' : 'box-ok') + '"><div class="val">' + (totEcartErr > 0 ? '+' : '') + totEcartErr.toFixed(2) + ' €</div><div class="lbl">Écart surfacturation HT</div></div>';
 
   const vb = document.getElementById('verdictBanner');
-  if (nErr === 0 && nUnknown === 0) {
+  if (nErr === 0 && nUnknown === 0 && nLibelle === 0) {
     vb.className = 'verdict-banner verdict-ok';
     vb.innerHTML = '✅ Facture conforme — Tous les tarifs correspondent au BPU contractuel.';
     document.getElementById('btnEmail').style.display = 'none';
   } else if (nErr > 0) {
     vb.className = 'verdict-banner verdict-nok';
-    vb.innerHTML = '⚠️ ' + nErr + ' ligne(s) en anomalie — Écart total surfacturé : <strong>+' + totEcartErr.toFixed(2) + ' € HT</strong>. À contester auprès d\'Eurofeu.';
+    vb.innerHTML = '⚠️ ' + nErr + ' ligne(s) en anomalie — Écart total surfacturé : <strong>+' + totEcartErr.toFixed(2) + ' € HT</strong>. À contester auprès d\'Eurofeu.' +
+      (nLibelle > 0 ? ' — ' + nLibelle + ' code(s) à clarifier (libellé identique, référence différente).' : '');
+    document.getElementById('btnEmail').style.display = 'inline-flex';
+  } else if (nLibelle > 0) {
+    vb.className = 'verdict-banner verdict-warn';
+    vb.innerHTML = '🔎 ' + nLibelle + ' ligne(s) rapprochée(s) par libellé — La référence sur la facture diffère du BPU. Vérification recommandée.' +
+      (nUnknown > 0 ? ' — ' + nUnknown + ' ligne(s) hors BPU.' : '');
     document.getElementById('btnEmail').style.display = 'inline-flex';
   } else {
     vb.className = 'verdict-banner verdict-warn';
@@ -324,6 +374,7 @@ function renderResults(info, rows) {
     (nErr > 0 ? '<button class="filter-btn" onclick="setFilter(\'err\', this)">⚠ Anomalies (' + nErr + ')</button>' : '') +
     (nWarn > 0 ? '<button class="filter-btn" onclick="setFilter(\'warn\', this)">↓ À vérifier (' + nWarn + ')</button>' : '') +
     (nOk > 0 ? '<button class="filter-btn" onclick="setFilter(\'ok\', this)">✓ Conformes (' + nOk + ')</button>' : '') +
+    (nLibelle > 0 ? '<button class="filter-btn" onclick="setFilter(\'libelle\', this)">~ Code différent (' + nLibelle + ')</button>' : '') +
     (nUnknown > 0 ? '<button class="filter-btn" onclick="setFilter(\'unknown\', this)">? Hors BPU (' + nUnknown + ')</button>' : '');
 
   renderTable(rows);
@@ -340,10 +391,16 @@ function renderTable(rows) {
   const filtered = currentFilter === 'all' ? rows : rows.filter(r => r.statut === currentFilter);
   const tbody = document.getElementById('resultBody');
   tbody.innerHTML = '';
-  const pillMap = { ok: ['pill-ok', '✓ Conforme'], err: ['pill-err', '⚠ Anomalie'], warn: ['pill-warn', '↓ Sous-tarif'], unknown: ['pill-unknown', '? Hors BPU'] };
+  const pillMap = {
+    ok:      ['pill-ok',      '✓ Conforme'],
+    err:     ['pill-err',     '⚠ Anomalie'],
+    warn:    ['pill-warn',    '↓ Sous-tarif'],
+    unknown: ['pill-unknown', '? Hors BPU'],
+    libelle: ['pill-libelle', '~ Code différent']
+  };
 
   filtered.forEach(r => {
-    const puBPU = r.prixBPU !== null ? r.prixBPU.toFixed(2) + ' €' : '<em style="color:#aaa">—</em>';
+    const puBPU  = r.prixBPU !== null ? r.prixBPU.toFixed(2) + ' €' : '<em style="color:#aaa">—</em>';
     const mntBPU = r.prixBPU !== null ? (r.prixBPU * r.qte).toFixed(2) + ' €' : '<em style="color:#aaa">—</em>';
     let ecartU = '<em style="color:#aaa">—</em>', ecartT = '<em style="color:#aaa">—</em>';
     if (r.ecartUnitaire !== null) {
@@ -353,8 +410,17 @@ function renderTable(rows) {
       ecartT = '<span class="' + cls + '">' + s + r.ecartTotal.toFixed(2) + ' €</span>';
     }
     const [pc, pt] = pillMap[r.statut] || ['pill-unknown', '?'];
+    const pillCell = r.statut === 'libelle'
+      ? '<span class="status-pill ' + pc + '">' + pt + '</span><span style="display:block;font-size:11px;color:#059669;margin-top:3px;">✓ tarif conforme</span>'
+      : '<span class="status-pill ' + pc + '">' + pt + '</span>';
+
+    // Colonne "Code article" : si match par libellé, on affiche le code facture + note BPU
+    const codeCell = r.codeMatch
+      ? '<strong>' + r.code + '</strong><span class="code-mismatch">⚠ BPU : ' + r.codeMatch + '</span>'
+      : '<strong>' + r.code + '</strong>';
+
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td><strong>' + r.code + '</strong></td>' +
+    tr.innerHTML = '<td>' + codeCell + '</td>' +
       '<td title="' + (r.designBPU || '').replace(/"/g, '&quot;') + '">' + (r.designation || '<em style="color:#aaa">—</em>') + '</td>' +
       '<td style="text-align:center">' + r.qte + '</td>' +
       '<td><strong>' + r.puHT.toFixed(2) + ' €</strong></td>' +
@@ -363,7 +429,7 @@ function renderTable(rows) {
       '<td>' + r.montantHT.toFixed(2) + ' €</td>' +
       '<td>' + mntBPU + '</td>' +
       '<td>' + ecartT + '</td>' +
-      '<td><span class="status-pill ' + pc + '">' + pt + '</span></td>';
+      '<td>' + pillCell + '</td>';
     tbody.appendChild(tr);
   });
 
@@ -394,8 +460,9 @@ function loadDemo() {
 }
 
 function sendEmailAnomalie() {
-  const anomalies = allRows.filter(r => r.statut === 'err');
-  if (anomalies.length === 0) return;
+  const anomalies  = allRows.filter(r => r.statut === 'err');
+  const libelles   = allRows.filter(r => r.statut === 'libelle');
+  if (anomalies.length === 0 && libelles.length === 0) return;
 
   // Récupérer infos facture depuis le DOM
   const infoEl = document.getElementById('infoFacture');
@@ -406,30 +473,47 @@ function sendEmailAnomalie() {
 
   const totEcart = anomalies.reduce((s, r) => s + (r.ecartTotal || 0), 0);
 
-  let lignesDetail = '';
+  let lignesAnomalie = '';
   anomalies.forEach(r => {
-    lignesDetail += '- Code ' + r.code + ' : facturé ' + r.puHT.toFixed(2) + ' € HT' +
+    lignesAnomalie += '- Code ' + r.code + ' : facturé ' + r.puHT.toFixed(2) + ' € HT' +
       ' / BPU contractuel ' + r.prixBPU.toFixed(2) + ' € HT' +
       ' → écart unitaire +' + r.ecartUnitaire.toFixed(2) + ' €' +
       ' × ' + r.qte + ' = +' + r.ecartTotal.toFixed(2) + ' € HT\n';
   });
 
+  let lignesLibelle = '';
+  libelles.forEach(r => {
+    lignesLibelle += '- Code facturé ' + r.code + ' (référence BPU : ' + r.codeMatch + ')' +
+      ' — "' + (r.designation || r.designBPU || '') + '"' +
+      ' : ' + r.puHT.toFixed(2) + ' € HT × ' + r.qte + '\n';
+  });
+
   const sujet = 'Anomalie tarifaire — Facture N° ' + numFact + (dateFact ? ' du ' + dateFact : '');
 
-  const corps =
+  let corps =
 'Madame, Monsieur,\n\n' +
-'Suite au contrôle de votre facture N° ' + numFact + (dateFact ? ' du ' + dateFact : '') + ', ' +
-'nous avons constaté ' + anomalies.length + ' écart' + (anomalies.length > 1 ? 's' : '') + ' entre les tarifs facturés et notre grille tarifaire contractuelle (BPU en vigueur).\n\n' +
-'Détail des anomalies :\n\n' +
-lignesDetail + '\n' +
-'Écart total de surfacturation : +' + totEcart.toFixed(2) + ' € HT\n\n' +
-'Nous vous remercions de bien vouloir émettre un avoir correctif pour un montant de ' + totEcart.toFixed(2) + ' € HT, ' +
-'ou de nous adresser une facture rectificative dans les meilleurs délais.\n\n' +
+'Suite au contrôle de votre facture N° ' + numFact + (dateFact ? ' du ' + dateFact : '') + ', ';
+
+  if (anomalies.length > 0) {
+    corps += 'nous avons constaté ' + anomalies.length + ' écart' + (anomalies.length > 1 ? 's' : '') +
+      ' entre les tarifs facturés et notre grille tarifaire contractuelle (BPU en vigueur).\n\n' +
+      'Détail des anomalies tarifaires :\n\n' + lignesAnomalie + '\n' +
+      'Écart total de surfacturation : +' + totEcart.toFixed(2) + ' € HT\n\n' +
+      'Nous vous remercions de bien vouloir émettre un avoir correctif pour un montant de ' + totEcart.toFixed(2) + ' € HT, ' +
+      'ou de nous adresser une facture rectificative dans les meilleurs délais.\n\n';
+  }
+
+  if (libelles.length > 0) {
+    corps += (anomalies.length > 0 ? 'Par ailleurs, n' : 'N') +
+      'ous avons relevé ' + libelles.length + ' ligne' + (libelles.length > 1 ? 's' : '') +
+      ' dont la référence article figurant sur la facture diffère de celle de notre BPU contractuel, ' +
+      'bien que le libellé corresponde. Nous vous remercions de clarifier ces références :\n\n' +
+      lignesLibelle + '\n';
+  }
+
+  corps +=
 'Restant à votre disposition pour tout renseignement complémentaire,\n\n' +
-'Cordialement,\n' +
-'Groupe Edgard\n' +
-'Comptabilité — SAS Edgard Développement\n' +
-'19 rue Edward Vaillant, 37000 Tours';
+'Cordialement,';
 
   const mailto = 'mailto:adv@eurofeu.fr' +
     '?subject=' + encodeURIComponent(sujet) +
